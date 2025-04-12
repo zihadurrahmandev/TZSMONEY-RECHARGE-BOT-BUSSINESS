@@ -1,77 +1,90 @@
-let libPrefix = "tzsmoneylib";
-let API_URL = "http://tzsmoney.com/api/recharge';
+const libPrefix = "tzsmoneylib";
+const API_BASE_URL = "http://tzsmoney.com/api/";
 
+// Save API key to bot property storage
 function setApiKey(key) {
-  Bot.setProperty(libPrefix + "apiKey", key, "string");
+  Bot.setProperty(`${libPrefix}apiKey`, key, "string");
 }
 
+// Load API key from bot property storage
 function loadApiKey() {
-  var apiKey = Bot.getProperty(libPrefix + "apiKey");
-  if (!apiKey) {
-    throw new Error("TZS Lib: no apiKey. You need to setup it");
-  }
+  const apiKey = Bot.getProperty(`${libPrefix}apiKey`);
+  if (!apiKey) throwError("no apiKey. You need to setup it");
   return apiKey;
 }
 
-function getQueryParams(json) {
-  return Object.keys(json).map(function(key) {
-    return encodeURIComponent(key) + "=" + encodeURIComponent(json[key]);
-  }).join("&");
+// Convert object params into URL-encoded query string
+function getQueryParams(params) {
+  return Object.entries(params)
+    .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
+    .join("&");
 }
 
-function recharge(options) {
-  if (!options) {
-    throw "TZS Lib: need options";
-  }
-  if (!options.number) {
-    throw "TZS Lib: need options.number";
-  }
-  if (!options.operator) {
-    throw "TZS Lib: need options.operator";
-  }
-  if (!options.number_type) {
-    throw "TZS Lib: need options.number_type";
-  }
-  if (!options.amount) {
-    throw "TZS Lib: need options.amount";
-  }
+// Centralized error thrower for consistency
+function throwError(message) {
+  throw `TZS Lib: ${message}`;
+}
 
-  let apiKey = loadApiKey();
-  let fields = {
-    number: options.number,
-    operator: options.operator,
-    number_type: options.number_type,
-    amount: options.amount,
-    api_key: apiKey
-  };
-  let queryParams = getQueryParams(fields);
-  let url = API_URL + "?" + queryParams;
-  let onSuccess = options.onSuccess || "";
-  let onError = options.onError || "";
-  let successCallback = libPrefix + "onRechargeResponse " + onSuccess + " " + onError;
-  HTTP.get({
-    url: url,
-    success: successCallback
+// Send error message to user (non-blocking error reporting)
+function sendError(message) {
+  Bot.sendMessage(`TZS Recharge error: ${message || "Unknown error"}`);
+}
+
+// Validate required fields in params object
+function validateOptions(options, requiredFields) {
+  requiredFields.forEach(field => {
+    if (!options[field]) {
+      throwError(`need options.${field}`);
+    }
   });
 }
 
-function onRechargeResponse() {
-  let json = JSON.parse(content);
-  let arr = params.split(" ");
-  let onSuccess = arr[0] ? arr[0].trim() : null;
-  let onError = arr[1] ? arr[1].trim() : null;
-  if (json.success && onSuccess) {
-    Bot.runCommand(onSuccess, { trx_id: json.trx_id });
-  } else if (!json.success && onError) {
-    Bot.runCommand(onError, { message: json.message });
-  } else if (!json.success) {
-    Bot.sendMessage("TZS Recharge error: " + (json.message || "Unknown error"));
-  }
+// Build callback string for HTTP request
+function buildCallback(eventName, onSuccess, onError) {
+  return `${libPrefix}${eventName} ${onSuccess || ""} ${onError || ""}`;
 }
 
-on(libPrefix + "onRechargeResponse", onRechargeResponse);
+// Generic API call function for any method
+function apiCall({ method, params = {}, onSuccess, onError, requiredFields = [] }) {
+  if (!method) throwError("need method name");
 
+  validateOptions(params, requiredFields);
+
+  const apiKey = loadApiKey();
+  const fields = { ...params, api_key: apiKey };
+  const queryParams = getQueryParams(fields);
+  const url = `${API_BASE_URL}${method}?${queryParams}`;
+
+  const callback = buildCallback("onApiResponse", onSuccess, onError);
+
+  HTTP.get({ url, success: callback });
+}
+
+// Generic response handler for all API methods
+function onApiResponse() {
+  const json = JSON.parse(content);
+  const [onSuccess, onError] = params.split(" ").map(p => p.trim());
+
+  const handlers = {
+    success: () => onSuccess && Bot.runCommand(onSuccess, json),
+    error: () => {
+      if (onError) {
+        Bot.runCommand(onError, { message: json.message });
+      } else {
+        sendError(json.message);
+      }
+    }
+  };
+
+  const action = json.success ? "success" : "error";
+  (handlers[action] || (() => sendError(json.message)))();
+}
+
+// Register API response handler
+on(`${libPrefix}onApiResponse`, onApiResponse);
+
+// Export public functions
 publish({
-  setApiKey: setApiKey,
-  recharge: recharge
+  setApiKey,
+  apiCall
 });
